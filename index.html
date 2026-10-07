@@ -4,6 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>FitTrack Pro - Personal & Aluno</title>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='22' fill='%2309090b'/%3E%3Cpath d='M24 39h10v22H24zm42 0h10v22H66zM34 46h32v8H34z' fill='%23facc15'/%3E%3C/svg%3E">
     
     <!-- Tailwind CSS -->
     <script src="https://cdn.tailwindcss.com"></script>
@@ -115,6 +116,42 @@
             { id: 'fullbody', day: 'Treino 5', name: 'FULL BODY', desc: 'Dumbbell inclinado, Remada baixa, Crucifixo inverso, Tríceps Francês, Rosca Scott.' }
         ];
 
+        let authResolved = false;
+
+        function getOrCreateLocalUid() {
+            const storageKey = 'ft_local_uid';
+            let uid = localStorage.getItem(storageKey);
+
+            if (!uid) {
+                const randomPart = (window.crypto && crypto.randomUUID)
+                    ? crypto.randomUUID()
+                    : `${Date.now()}-${Math.random().toString(36).slice(2, 12)}`;
+                uid = `local-${randomPart}`;
+                localStorage.setItem(storageKey, uid);
+            }
+
+            return uid;
+        }
+
+        function continueWithoutFirebaseAuth(error) {
+            if (authResolved) return;
+
+            authResolved = true;
+            currentUser = {
+                uid: getOrCreateLocalUid(),
+                isAnonymous: true,
+                localFallback: true
+            };
+
+            console.warn(
+                "Firebase Authentication indisponível; usando identidade local persistente.",
+                error?.code || error?.message || error
+            );
+
+            checkLocalRole();
+            showToast("Autenticação em nuvem indisponível. O app foi iniciado em modo compatível.", "error");
+        }
+
         async function initAuth() {
             try {
                 if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
@@ -124,12 +161,16 @@
                 }
             } catch (error) {
                 console.error("Auth error:", error);
-                showToast("Erro na autenticação. Operando offline.", "error");
+
+                // Em hospedagem própria, o Firebase pode ainda não ter o provedor
+                // Anônimo habilitado. Não deixamos a tela travada por causa disso.
+                continueWithoutFirebaseAuth(error);
             }
         }
 
         onAuthStateChanged(auth, (user) => {
-            if (user) {
+            if (user && !authResolved) {
+                authResolved = true;
                 currentUser = user;
                 checkLocalRole();
             }
@@ -246,7 +287,9 @@
                 renderUI();
             }, (error) => {
                 console.error("Plan Error:", error);
-                showToast("Erro ao carregar planejamento.", "error");
+                planData = { meals: defaultMeals, workouts: defaultWorkouts };
+                renderUI();
+                showToast("Nuvem indisponível. Planejamento padrão carregado.", "error");
             });
         }
 
