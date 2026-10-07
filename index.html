@@ -1,0 +1,711 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>FitTrack Pro - Personal & Aluno</title>
+    
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        brand: {
+                            black: '#09090b',      
+                            card: '#18181b',       
+                            cardBorder: '#27272a', 
+                            yellow: '#facc15',     
+                            yellowDark: '#ca8a04', 
+                            purple: '#a855f7',     
+                            purpleDark: '#7e22ce', 
+                        }
+                    },
+                    fontFamily: {
+                        sans: ['Inter', 'ui-sans-serif', 'system-ui', 'sans-serif'],
+                    }
+                }
+            }
+        }
+    </script>
+
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;700;800&display=swap');
+        
+        body {
+            background-color: #09090b;
+            color: #e4e4e7;
+            -webkit-tap-highlight-color: transparent;
+        }
+
+        .no-scrollbar::-webkit-scrollbar { display: none; }
+        .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+        .fade-in { animation: fadeIn 0.3s ease-in-out; }
+        
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        .pb-safe { padding-bottom: env(safe-area-inset-bottom, 20px); }
+
+        /* Custom Date Input Styling */
+        input[type="date"]::-webkit-calendar-picker-indicator {
+            filter: invert(1);
+            cursor: pointer;
+        }
+    </style>
+
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, setDoc, onSnapshot, collection } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // APAGUE AS CONFIGURAÇÕES ANTIGAS E COLE A SUA AQUI:
+        const appId = 'fittrack-pro-app'; 
+        const firebaseConfig = {
+            apiKey: "AIzaSyClhSRQGp5noSrD4wAuM2b7jAUdWHuuH5M",
+            authDomain: "fittrack-4fd12.firebaseapp.com",
+            databaseURL: "https://fittrack-4fd12-default-rtdb.firebaseio.com",
+            projectId: "fittrack-4fd12",
+            storageBucket: "fittrack-4fd12.firebasestorage.app",
+            messagingSenderId: "578825720093",
+            appId: "1:578825720093:web:2d807e937b92dc912991f4"
+        };
+
+        const app = initializeApp(firebaseConfig);
+        const db = getFirestore(app);
+        const auth = getAuth(app);
+
+        const TOTAL_BOTTLES = 6;
+        let currentUser = null;
+        let userRole = null; // 'client' or 'pt'
+        let activeClientId = null; // ID of the client being viewed (same as currentUser if role is client)
+        
+        // Obter data local no formato YYYY-MM-DD
+        const getLocalYYYYMMDD = () => {
+            const d = new Date();
+            return new Date(d.getTime() - (d.getTimezoneOffset() * 60000)).toISOString().split('T')[0];
+        };
+        let selectedDate = getLocalYYYYMMDD();
+
+        let planData = { meals: [], workouts: [] };
+        let logData = { water: 0, meals: {}, workouts: {}, notes: '' };
+
+        let unsubPlan = null;
+        let unsubLog = null;
+
+        // Default Data Fallback (Se novo usuário)
+        const defaultMeals = [
+            { id: 'cafe', time: 'Manhã', title: 'Café da Manhã', items: 'Crepioca com frango\n1 Fruta (Melão ou Laranja)' },
+            { id: 'almoco', time: 'Meio-dia', title: 'Almoço', items: 'Arroz e Feijão\nFilé de Peito\nSalada à vontade' },
+            { id: 'lanche', time: 'Tarde', title: 'Lanche', items: 'Misto Quente (Pão, queijo, presunto, requeijão)\n1 Banana' },
+            { id: 'jantar', time: 'Noite', title: 'Jantar', items: 'Panqueca de carne\nSalada verde' }
+        ];
+        const defaultWorkouts = [
+            { id: 'upper', day: 'Treino 1', name: 'UPPER', desc: 'Supino reto, Pulley frente, Elevação lateral, Tríceps polia, Rosca direta.' },
+            { id: 'cardio1', day: 'Treino 2', name: 'CARDIO', desc: 'Esteira 1h.' },
+            { id: 'lower', day: 'Treino 3', name: 'LOWER', desc: 'Agachamento Smith, Cadeira Extensora, Flexora, Stiff, Panturrilha.' },
+            { id: 'cardio2', day: 'Treino 4', name: 'CARDIO', desc: 'Bike 45 min.' },
+            { id: 'fullbody', day: 'Treino 5', name: 'FULL BODY', desc: 'Dumbbell inclinado, Remada baixa, Crucifixo inverso, Tríceps Francês, Rosca Scott.' }
+        ];
+
+        async function initAuth() {
+            try {
+                if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                    await signInWithCustomToken(auth, __initial_auth_token);
+                } else {
+                    await signInAnonymously(auth);
+                }
+            } catch (error) {
+                console.error("Auth error:", error);
+                showToast("Erro na autenticação. Operando offline.", "error");
+            }
+        }
+
+        onAuthStateChanged(auth, (user) => {
+            if (user) {
+                currentUser = user;
+                checkLocalRole();
+            }
+        });
+
+        function checkLocalRole() {
+            const savedRole = localStorage.getItem('ft_role');
+            const savedClientId = localStorage.getItem('ft_client_id');
+            
+            if (savedRole && savedClientId) {
+                userRole = savedRole;
+                activeClientId = savedClientId;
+                startApp();
+            } else {
+                document.getElementById('screen-loading').classList.add('hidden');
+                document.getElementById('screen-role').classList.remove('hidden');
+            }
+        }
+
+        window.selectRole = (role) => {
+            userRole = role;
+            if (role === 'client') {
+                activeClientId = currentUser.uid;
+                localStorage.setItem('ft_role', 'client');
+                localStorage.setItem('ft_client_id', activeClientId);
+                startApp();
+            } else {
+                document.getElementById('role-selection-buttons').classList.add('hidden');
+                document.getElementById('pt-login-form').classList.remove('hidden');
+            }
+        };
+
+        window.loginAsPT = () => {
+            const code = document.getElementById('pt-client-code').value.trim();
+            if (code.length < 5) {
+                showToast("Código inválido.", "error");
+                return;
+            }
+            activeClientId = code;
+            localStorage.setItem('ft_role', 'pt');
+            localStorage.setItem('ft_client_id', activeClientId);
+            startApp();
+        };
+
+        window.logout = () => {
+            localStorage.removeItem('ft_role');
+            localStorage.removeItem('ft_client_id');
+            window.location.reload();
+        }
+
+        function startApp() {
+            document.getElementById('screen-role').classList.add('hidden');
+            document.getElementById('screen-main').classList.remove('hidden');
+            
+            // Setup Calendar
+            const dateInput = document.getElementById('calendar-input');
+            dateInput.value = selectedDate;
+            dateInput.addEventListener('change', (e) => {
+                selectedDate = e.target.value;
+                subscribeToLog(); // Resubscribe for new date
+            });
+
+            // Role specific UI
+            if (userRole === 'pt') {
+                document.getElementById('user-badge').innerHTML = '<i data-lucide="shield-check" class="w-4 h-4 text-brand-yellow"></i> Modo Personal';
+                document.getElementById('btn-edit-diet').classList.remove('hidden');
+                document.getElementById('btn-edit-workout').classList.remove('hidden');
+                document.getElementById('notes-input').readOnly = true;
+                document.getElementById('notes-input').placeholder = "O aluno ainda não escreveu nada neste dia...";
+            } else {
+                document.getElementById('user-badge').innerHTML = `
+                    <button onclick="copyClientCode()" class="flex items-center gap-1 hover:text-white transition-colors bg-brand-yellow/10 px-2 py-1 rounded text-brand-yellow">
+                        <i data-lucide="key" class="w-3 h-3"></i> Meu Código
+                    </button>
+                `;
+            }
+
+            lucide.createIcons();
+            subscribeToPlan();
+            subscribeToLog();
+            switchTab('dashboard');
+        }
+
+        window.copyClientCode = () => {
+            const tempInput = document.createElement("input");
+            tempInput.value = currentUser.uid;
+            document.body.appendChild(tempInput);
+            tempInput.select();
+            document.execCommand("copy");
+            document.body.removeChild(tempInput);
+            showToast("Código copiado! Envie ao Personal.", "success");
+        }
+
+        function getPlanRef() {
+            return doc(db, 'artifacts', appId, 'public', 'data', 'plans', activeClientId);
+        }
+
+        function getLogRef() {
+            return doc(db, 'artifacts', appId, 'public', 'data', 'logs', `${activeClientId}_${selectedDate}`);
+        }
+
+        function subscribeToPlan() {
+            if (unsubPlan) unsubPlan();
+            unsubPlan = onSnapshot(getPlanRef(), (docSnap) => {
+                if (docSnap.exists()) {
+                    planData = docSnap.data();
+                } else {
+                    // Seed initial data if client
+                    planData = { meals: defaultMeals, workouts: defaultWorkouts };
+                    if (userRole === 'client') {
+                        setDoc(getPlanRef(), planData);
+                    }
+                }
+                renderUI();
+            }, (error) => {
+                console.error("Plan Error:", error);
+                showToast("Erro ao carregar planejamento.", "error");
+            });
+        }
+
+        function subscribeToLog() {
+            if (unsubLog) unsubLog();
+            // Limpa visualmente enquanto carrega
+            logData = { water: 0, meals: {}, workouts: {}, notes: '' };
+            renderUI();
+
+            unsubLog = onSnapshot(getLogRef(), (docSnap) => {
+                if (docSnap.exists()) {
+                    logData = docSnap.data();
+                } else {
+                    logData = { water: 0, meals: {}, workouts: {}, notes: '' };
+                }
+                renderUI();
+            }, (error) => {
+                console.error("Log Error:", error);
+            });
+        }
+
+        async function saveLogData() {
+            if (userRole === 'pt') return; // PT doesn't save logs
+            try {
+                await setDoc(getLogRef(), logData, { merge: true });
+            } catch (e) {
+                console.error("Save error", e);
+            }
+        }
+
+        window.updateWater = (change) => {
+            if (userRole === 'pt') return showToast("Apenas o aluno registra consumo.", "error");
+            let newVal = (logData.water || 0) + change;
+            if (newVal >= 0 && newVal <= TOTAL_BOTTLES) {
+                logData.water = newVal;
+                saveLogData();
+                renderUI();
+            }
+        };
+
+        window.toggleMeal = (id) => {
+            if (userRole === 'pt') return showToast("Apenas o aluno marca refeições.", "error");
+            logData.meals = logData.meals || {};
+            logData.meals[id] = !logData.meals[id];
+            saveLogData();
+            renderUI();
+        };
+
+        window.toggleWorkout = (id) => {
+            if (userRole === 'pt') return showToast("Apenas o aluno marca treinos.", "error");
+            logData.workouts = logData.workouts || {};
+            logData.workouts[id] = !logData.workouts[id];
+            saveLogData();
+            renderUI();
+        };
+
+        window.saveNotes = () => {
+            if (userRole === 'pt') return;
+            logData.notes = document.getElementById('notes-input').value;
+            saveLogData();
+        };
+
+        function renderUI() {
+            // Dashboard Progress
+            const mealsArr = planData.meals || [];
+            const workArr = planData.workouts || [];
+            
+            const mealsTotal = mealsArr.length;
+            const mealsDone = mealsArr.filter(m => logData.meals && logData.meals[m.id]).length;
+            const mealsPct = mealsTotal ? Math.round((mealsDone / mealsTotal) * 100) : 0;
+            
+            document.getElementById('dash-meals-text').textContent = `${mealsDone}/${mealsTotal}`;
+            document.getElementById('dash-meals-pct').textContent = `${mealsPct}%`;
+            document.getElementById('bar-meals').style.width = `${mealsPct}%`;
+
+            const waterCount = logData.water || 0;
+            const waterPct = Math.round((waterCount / TOTAL_BOTTLES) * 100);
+            document.getElementById('dash-water-text').textContent = `${waterCount}/${TOTAL_BOTTLES}`;
+            document.getElementById('dash-water-pct').textContent = `${waterPct}%`;
+            document.getElementById('bar-water').style.width = `${waterPct}%`;
+
+            const workTotal = workArr.length;
+            const workDone = workArr.filter(w => logData.workouts && logData.workouts[w.id]).length;
+            const workPct = workTotal ? Math.round((workDone / workTotal) * 100) : 0;
+            
+            document.getElementById('dash-workouts-text').textContent = `${workDone}/${workTotal}`;
+            document.getElementById('dash-workouts-pct').textContent = `${workPct}%`;
+            document.getElementById('bar-workouts').style.width = `${workPct}%`;
+
+            // Water Grid
+            let waterHTML = '';
+            for (let i = 0; i < TOTAL_BOTTLES; i++) {
+                const filled = i < waterCount;
+                waterHTML += `
+                    <div class="w-14 h-16 rounded-xl flex items-center justify-center transition-all duration-300 border-2 ${filled ? 'bg-blue-500/20 border-blue-500 scale-105 shadow-lg shadow-blue-500/20' : 'bg-brand-card border-gray-800'}">
+                        <i data-lucide="droplet" class="w-6 h-6 ${filled ? 'text-blue-400 fill-blue-500/50' : 'text-gray-600'}"></i>
+                    </div>
+                `;
+            }
+            document.getElementById('water-grid').innerHTML = waterHTML;
+
+            // Dieta List
+            const mealsContainer = document.getElementById('meals-container');
+            if(mealsArr.length === 0) {
+                mealsContainer.innerHTML = '<p class="text-gray-500 text-center py-4">Nenhuma dieta cadastrada.</p>';
+            } else {
+                mealsContainer.innerHTML = mealsArr.map(m => {
+                    const isDone = logData.meals && logData.meals[m.id];
+                    const itemsHtml = m.items ? m.items.split('\n').map(i => `<li>${i}</li>`).join('') : '';
+                    return `
+                    <div onclick="toggleMeal('${m.id}')" class="p-5 rounded-2xl border-2 cursor-pointer transition-all duration-300 ${isDone ? 'bg-brand-yellow/10 border-brand-yellow/40' : 'bg-brand-card border-gray-800 hover:border-gray-700'} relative overflow-hidden">
+                        <div class="flex justify-between items-start mb-3">
+                            <div>
+                                <span class="text-[10px] font-bold text-gray-500 tracking-widest uppercase mb-1 block">${m.time}</span>
+                                <h3 class="text-lg font-extrabold transition-all ${isDone ? 'line-through opacity-60 text-brand-yellow' : 'text-white'}">${m.title}</h3>
+                            </div>
+                            <div class="mt-1">
+                                ${isDone ? `<i data-lucide="check-circle-2" class="text-brand-yellow w-7 h-7"></i>` : `<i data-lucide="circle" class="text-gray-600 w-7 h-7"></i>`}
+                            </div>
+                        </div>
+                        <ul class="space-y-1.5 pl-4 list-disc text-sm font-medium ${isDone ? 'text-gray-500' : 'text-gray-300'}">
+                            ${itemsHtml}
+                        </ul>
+                    </div>`;
+                }).join('');
+            }
+
+            // Workout List
+            const workoutsContainer = document.getElementById('workouts-container');
+            if(workArr.length === 0) {
+                workoutsContainer.innerHTML = '<p class="text-gray-500 text-center py-4">Nenhum treino cadastrado.</p>';
+            } else {
+                workoutsContainer.innerHTML = workArr.map(w => {
+                    const isDone = logData.workouts && logData.workouts[w.id];
+                    return `
+                    <div onclick="toggleWorkout('${w.id}')" class="p-5 rounded-2xl border-2 cursor-pointer transition-all duration-300 flex items-center gap-4 ${isDone ? 'bg-brand-purple/10 border-brand-purple/40' : 'bg-brand-card border-gray-800 hover:border-gray-700'}">
+                        <div class="flex-1">
+                            <span class="text-[10px] font-bold text-gray-500 tracking-widest uppercase mb-1 block">${w.day}</span>
+                            <h3 class="text-base font-extrabold mb-1 transition-all ${isDone ? 'line-through opacity-60 text-brand-purple' : 'text-white'}">${w.name}</h3>
+                            <p class="text-xs font-medium leading-relaxed ${isDone ? 'text-gray-600' : 'text-gray-400'}">${w.desc}</p>
+                        </div>
+                        <div class="shrink-0">
+                            ${isDone ? `<i data-lucide="check-circle-2" class="text-brand-purple w-8 h-8"></i>` : `<i data-lucide="circle" class="text-gray-600 w-8 h-8"></i>`}
+                        </div>
+                    </div>`;
+                }).join('');
+            }
+
+            // Notes
+            if (document.activeElement !== document.getElementById('notes-input')) {
+                document.getElementById('notes-input').value = logData.notes || '';
+            }
+
+            lucide.createIcons();
+        }
+
+        window.openDietEditor = () => {
+            const rawText = (planData.meals || []).map(m => `[${m.time}] ${m.title}\n${m.items}`).join('\n\n---\n\n');
+            document.getElementById('edit-area').value = rawText;
+            document.getElementById('modal-title').innerText = "Editar Dieta";
+            document.getElementById('modal-help').innerText = "Formato: [Horário] Nome da Refeição \n Itens (um por linha). Separe as refeições com '---'.";
+            document.getElementById('editor-modal').dataset.mode = 'diet';
+            document.getElementById('editor-modal').classList.remove('hidden');
+        };
+
+        window.openWorkoutEditor = () => {
+            const rawText = (planData.workouts || []).map(w => `[${w.day}] ${w.name}\n${w.desc}`).join('\n\n---\n\n');
+            document.getElementById('edit-area').value = rawText;
+            document.getElementById('modal-title').innerText = "Editar Treino";
+            document.getElementById('modal-help').innerText = "Formato: [Dia] Nome do Treino \n Descrição dos exercícios. Separe os treinos com '---'.";
+            document.getElementById('editor-modal').dataset.mode = 'workout';
+            document.getElementById('editor-modal').classList.remove('hidden');
+        };
+
+        window.closeEditor = () => {
+            document.getElementById('editor-modal').classList.add('hidden');
+        };
+
+        window.saveEditor = async () => {
+            const mode = document.getElementById('editor-modal').dataset.mode;
+            const rawText = document.getElementById('edit-area').value;
+            const blocks = rawText.split('---').map(b => b.trim()).filter(b => b);
+            
+            try {
+                if (mode === 'diet') {
+                    const newMeals = blocks.map((block, idx) => {
+                        const lines = block.split('\n').map(l => l.trim()).filter(l => l);
+                        const header = lines[0] || '';
+                        const timeMatch = header.match(/\[(.*?)\]/);
+                        const time = timeMatch ? timeMatch[1] : `Refeição ${idx+1}`;
+                        const title = header.replace(/\[.*?\]/, '').trim() || `Refeição ${idx+1}`;
+                        const items = lines.slice(1).join('\n');
+                        return { id: `m_${Date.now()}_${idx}`, time, title, items };
+                    });
+                    planData.meals = newMeals;
+                } else if (mode === 'workout') {
+                    const newWorkouts = blocks.map((block, idx) => {
+                        const lines = block.split('\n').map(l => l.trim()).filter(l => l);
+                        const header = lines[0] || '';
+                        const timeMatch = header.match(/\[(.*?)\]/);
+                        const day = timeMatch ? timeMatch[1] : `Dia ${idx+1}`;
+                        const name = header.replace(/\[.*?\]/, '').trim() || `Treino ${idx+1}`;
+                        const desc = lines.slice(1).join('\n');
+                        return { id: `w_${Date.now()}_${idx}`, day, name, desc };
+                    });
+                    planData.workouts = newWorkouts;
+                }
+
+                await setDoc(getPlanRef(), planData, { merge: true });
+                showToast("Salvo com sucesso!", "success");
+                closeEditor();
+            } catch (e) {
+                console.error(e);
+                showToast("Erro ao processar formatação.", "error");
+            }
+        };
+
+        window.switchTab = (tabId) => {
+            ['dashboard', 'dieta', 'treino', 'notas'].forEach(id => {
+                document.getElementById(`view-${id}`).classList.add('hidden');
+                document.getElementById(`nav-${id}`).className = "flex flex-col items-center p-3 rounded-xl transition-all min-w-[70px] text-gray-500 hover:text-gray-300";
+            });
+            document.getElementById(`view-${tabId}`).classList.remove('hidden');
+            const activeNav = document.getElementById(`nav-${tabId}`);
+            if (tabId === 'dashboard') activeNav.classList.add('text-brand-yellow', 'bg-brand-yellow/10');
+            if (tabId === 'dieta') activeNav.classList.add('text-brand-yellow', 'bg-brand-yellow/10');
+            if (tabId === 'treino') activeNav.classList.add('text-brand-purple', 'bg-brand-purple/10');
+            if (tabId === 'notas') activeNav.classList.add('text-white', 'bg-gray-800');
+        };
+
+        function showToast(msg, type = "success") {
+            const toast = document.createElement('div');
+            toast.className = `fixed top-4 left-1/2 -translate-x-1/2 px-4 py-2 rounded-lg text-sm font-bold shadow-xl z-[100] fade-in flex items-center gap-2 ${type === 'success' ? 'bg-brand-yellow text-black' : 'bg-red-500 text-white'}`;
+            toast.innerHTML = `<i data-lucide="${type === 'success' ? 'check-circle' : 'alert-circle'}" class="w-4 h-4"></i> ${msg}`;
+            document.body.appendChild(toast);
+            lucide.createIcons();
+            setTimeout(() => {
+                toast.style.opacity = '0';
+                toast.style.transition = 'opacity 0.3s';
+                setTimeout(() => toast.remove(), 300);
+            }, 3000);
+        }
+
+        // Init
+        initAuth();
+    </script>
+</head>
+<body class="antialiased min-h-screen flex justify-center selection:bg-brand-yellow/30">
+
+    <!-- ================= SCREEN: LOADING ================= -->
+    <div id="screen-loading" class="absolute inset-0 flex flex-col items-center justify-center bg-[#09090b] z-50">
+        <i data-lucide="loader-2" class="w-10 h-10 text-brand-yellow animate-spin mb-4"></i>
+        <p class="text-gray-400 font-medium animate-pulse">Conectando ao sistema...</p>
+    </div>
+
+    <!-- ================= SCREEN: ROLE SELECTION ================= -->
+    <div id="screen-role" class="absolute inset-0 flex flex-col items-center justify-center bg-[#09090b] z-40 hidden px-6">
+        <h1 class="text-3xl font-extrabold text-transparent bg-clip-text bg-gradient-to-r from-brand-yellow to-brand-purple tracking-tight mb-8 text-center">
+            FitTrack PRO
+        </h1>
+        
+        <div id="role-selection-buttons" class="w-full max-w-sm space-y-4">
+            <p class="text-center text-gray-400 mb-6 text-sm">Selecione seu perfil de acesso:</p>
+            <button onclick="selectRole('client')" class="w-full py-4 bg-brand-yellow text-black font-extrabold rounded-2xl hover:bg-brand-yellowDark transition-colors flex items-center justify-center gap-3 shadow-lg shadow-brand-yellow/20">
+                <i data-lucide="user" class="w-5 h-5"></i> Sou o Aluno
+            </button>
+            <button onclick="selectRole('pt')" class="w-full py-4 bg-gray-800 text-white font-extrabold rounded-2xl hover:bg-gray-700 transition-colors flex items-center justify-center gap-3 border border-gray-700">
+                <i data-lucide="shield-check" class="w-5 h-5"></i> Sou o Personal
+            </button>
+        </div>
+
+        <div id="pt-login-form" class="w-full max-w-sm hidden fade-in">
+            <h2 class="text-xl font-bold text-white mb-2">Acesso Personal</h2>
+            <p class="text-gray-400 text-sm mb-6">Peça o "Código de Acesso" ao seu aluno para monitorar os treinos e dieta dele.</p>
+            
+            <input type="text" id="pt-client-code" placeholder="Cole o código do aluno aqui" class="w-full bg-[#18181b] border border-gray-700 rounded-xl p-4 text-white placeholder:text-gray-600 focus:outline-none focus:border-brand-yellow mb-4 font-mono text-sm">
+            
+            <button onclick="loginAsPT()" class="w-full py-4 bg-brand-yellow text-black font-extrabold rounded-xl hover:bg-brand-yellowDark transition-colors shadow-lg shadow-brand-yellow/20">
+                Acessar Painel do Aluno
+            </button>
+            <button onclick="window.location.reload()" class="w-full py-3 mt-2 text-gray-500 font-medium hover:text-gray-300 text-sm">
+                Voltar
+            </button>
+        </div>
+    </div>
+
+    <!-- ================= SCREEN: MAIN APP ================= -->
+    <div id="screen-main" class="w-full max-w-md md:max-w-xl flex flex-col h-full relative hidden pb-24 md:pb-8 pt-6 px-4 md:px-8">
+        
+        <!-- Header & Topbar -->
+        <header class="mb-6 shrink-0">
+            <div class="flex justify-between items-center mb-4">
+                <h1 class="text-2xl font-extrabold text-transparent bg-clip-text bg-gradient-to-r from-brand-yellow to-brand-purple tracking-tight">
+                    FitTrack PRO
+                </h1>
+                <button onclick="logout()" class="text-gray-500 hover:text-red-400 transition-colors" title="Sair / Trocar Perfil">
+                    <i data-lucide="log-out" class="w-5 h-5"></i>
+                </button>
+            </div>
+            
+            <!-- Context Bar (Role & Calendar) -->
+            <div class="bg-brand-card border border-brand-cardBorder rounded-xl p-3 flex justify-between items-center shadow-md">
+                <div id="user-badge" class="text-xs font-bold text-gray-400 uppercase tracking-wider flex items-center gap-1">
+                    <!-- Injected via JS -->
+                </div>
+                <div class="flex items-center gap-2 bg-[#09090b] px-3 py-1.5 rounded-lg border border-gray-800 focus-within:border-brand-yellow transition-colors cursor-pointer relative">
+                    <i data-lucide="calendar" class="w-4 h-4 text-brand-yellow absolute left-3 pointer-events-none"></i>
+                    <input type="date" id="calendar-input" class="bg-transparent text-sm font-bold text-white focus:outline-none w-[115px] pl-6 cursor-pointer">
+                </div>
+            </div>
+        </header>
+
+        <main class="flex-1 w-full relative">
+            
+            <!-- VIEW: DASHBOARD -->
+            <div id="view-dashboard" class="space-y-6 fade-in">
+                
+                <div class="bg-brand-card p-6 rounded-2xl shadow-xl border border-brand-cardBorder">
+                    <h2 class="text-xl font-bold text-white mb-4">Progresso do Dia</h2>
+                    
+                    <div class="space-y-5">
+                        <div>
+                            <div class="flex justify-between text-sm mb-2">
+                                <span class="text-gray-300 font-medium flex items-center gap-2"><i data-lucide="apple" class="w-4 h-4 text-brand-yellow"></i> Dieta (<span id="dash-meals-text">0/0</span>)</span>
+                                <span id="dash-meals-pct" class="text-brand-yellow font-bold">0%</span>
+                            </div>
+                            <div class="w-full bg-gray-800 rounded-full h-3 overflow-hidden border border-gray-700">
+                                <div id="bar-meals" class="bg-brand-yellow h-3 rounded-full transition-all duration-500 w-0"></div>
+                            </div>
+                        </div>
+                        
+                        <div>
+                            <div class="flex justify-between text-sm mb-2">
+                                <span class="text-gray-300 font-medium flex items-center gap-2"><i data-lucide="droplets" class="w-4 h-4 text-blue-400"></i> Água (<span id="dash-water-text">0/6</span>)</span>
+                                <span id="dash-water-pct" class="text-blue-400 font-bold">0%</span>
+                            </div>
+                            <div class="w-full bg-gray-800 rounded-full h-3 overflow-hidden border border-gray-700">
+                                <div id="bar-water" class="bg-blue-500 h-3 rounded-full transition-all duration-500 w-0"></div>
+                            </div>
+                        </div>
+
+                        <div>
+                            <div class="flex justify-between text-sm mb-2">
+                                <span class="text-gray-300 font-medium flex items-center gap-2"><i data-lucide="activity" class="w-4 h-4 text-brand-purple"></i> Treino (<span id="dash-workouts-text">0/0</span>)</span>
+                                <span id="dash-workouts-pct" class="text-brand-purple font-bold">0%</span>
+                            </div>
+                            <div class="w-full bg-gray-800 rounded-full h-3 overflow-hidden border border-gray-700">
+                                <div id="bar-workouts" class="bg-brand-purple h-3 rounded-full transition-all duration-500 w-0"></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="bg-brand-card p-6 rounded-2xl shadow-xl border border-brand-cardBorder">
+                    <h3 class="text-lg font-bold text-white mb-2 flex items-center gap-2">
+                        <i data-lucide="droplets" class="text-blue-400"></i> Controle de Água
+                    </h3>
+                    <p class="text-sm text-gray-400 mb-6">Meta: 6 garrafas (3.9L) contra retenção.</p>
+                    
+                    <div id="water-grid" class="flex flex-wrap gap-3 justify-center mb-8">
+                        <!-- Injected via JS -->
+                    </div>
+                    
+                    <div class="flex justify-between gap-4">
+                        <button onclick="updateWater(-1)" class="flex-1 py-3 bg-gray-800 border border-gray-700 text-gray-300 rounded-xl hover:bg-gray-700 transition-colors font-bold tracking-wide">
+                            - Remover
+                        </button>
+                        <button onclick="updateWater(1)" class="flex-1 py-3 bg-blue-600 border border-blue-500 text-white rounded-xl hover:bg-blue-500 transition-colors font-bold tracking-wide shadow-lg shadow-blue-500/20">
+                            + Adicionar
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- VIEW: DIETA -->
+            <div id="view-dieta" class="space-y-4 fade-in hidden">
+                <div class="flex justify-between items-center mb-2">
+                    <h2 class="font-bold text-lg text-white">Plano Alimentar</h2>
+                    <button id="btn-edit-diet" onclick="openDietEditor()" class="hidden bg-gray-800 hover:bg-gray-700 text-brand-yellow text-xs font-bold py-1.5 px-3 rounded flex items-center gap-2 border border-gray-700">
+                        <i data-lucide="pencil" class="w-3 h-3"></i> Editar (PT)
+                    </button>
+                </div>
+                <div id="meals-container" class="space-y-4">
+                    <!-- Injected via JS -->
+                </div>
+            </div>
+
+            <!-- VIEW: TREINO -->
+            <div id="view-treino" class="space-y-4 fade-in hidden">
+                <div class="flex justify-between items-center mb-2">
+                    <h2 class="font-bold text-lg text-white">Rotina Semanal</h2>
+                    <button id="btn-edit-workout" onclick="openWorkoutEditor()" class="hidden bg-gray-800 hover:bg-gray-700 text-brand-purple text-xs font-bold py-1.5 px-3 rounded flex items-center gap-2 border border-gray-700">
+                        <i data-lucide="pencil" class="w-3 h-3"></i> Editar (PT)
+                    </button>
+                </div>
+                <div id="workouts-container" class="space-y-4">
+                    <!-- Injected via JS -->
+                </div>
+            </div>
+
+            <!-- VIEW: NOTAS -->
+            <div id="view-notas" class="fade-in hidden h-full">
+                <div class="bg-brand-card p-6 rounded-2xl shadow-xl border border-brand-cardBorder flex flex-col h-full min-h-[400px]">
+                    <h2 class="text-xl font-bold text-white mb-2 flex items-center gap-2">
+                        <i data-lucide="book-open" class="text-brand-yellow"></i> Diário (Notas)
+                    </h2>
+                    <p class="text-sm text-gray-400 mb-4">
+                        Relatos sobre fome, peso em jejum ou evolução das cargas no treino.
+                    </p>
+                    
+                    <textarea
+                        id="notes-input"
+                        oninput="saveNotes()"
+                        placeholder="Escreva como foi o seu dia..."
+                        class="flex-1 w-full bg-[#09090b] border border-gray-800 rounded-xl p-4 text-gray-200 placeholder:text-gray-600 focus:outline-none focus:ring-2 focus:ring-brand-yellow/50 focus:border-brand-yellow transition-all resize-none font-medium"
+                    ></textarea>
+                </div>
+            </div>
+
+        </main>
+
+        <!-- BOTTOM NAVIGATION -->
+        <nav class="fixed bottom-0 left-0 w-full bg-[#09090b]/90 backdrop-blur-lg border-t border-gray-800 pb-safe md:static md:bg-transparent md:border-none md:mt-8 z-30">
+            <div class="max-w-md md:max-w-xl mx-auto flex justify-between px-2 py-2 md:bg-brand-card md:rounded-2xl md:border md:border-gray-800 md:p-2 shadow-2xl">
+                <button onclick="switchTab('dashboard')" id="nav-dashboard" class="flex flex-col items-center p-3 rounded-xl transition-all min-w-[70px] text-brand-yellow bg-brand-yellow/10">
+                    <i data-lucide="home" class="mb-1 w-6 h-6"></i>
+                    <span class="text-[10px] font-bold uppercase tracking-widest">Início</span>
+                </button>
+                <button onclick="switchTab('dieta')" id="nav-dieta" class="flex flex-col items-center p-3 rounded-xl transition-all min-w-[70px] text-gray-500 hover:text-gray-300">
+                    <i data-lucide="utensils" class="mb-1 w-6 h-6"></i>
+                    <span class="text-[10px] font-bold uppercase tracking-widest">Dieta</span>
+                </button>
+                <button onclick="switchTab('treino')" id="nav-treino" class="flex flex-col items-center p-3 rounded-xl transition-all min-w-[70px] text-gray-500 hover:text-gray-300">
+                    <i data-lucide="dumbbell" class="mb-1 w-6 h-6"></i>
+                    <span class="text-[10px] font-bold uppercase tracking-widest">Treino</span>
+                </button>
+                <button onclick="switchTab('notas')" id="nav-notas" class="flex flex-col items-center p-3 rounded-xl transition-all min-w-[70px] text-gray-500 hover:text-gray-300">
+                    <i data-lucide="book-open" class="mb-1 w-6 h-6"></i>
+                    <span class="text-[10px] font-bold uppercase tracking-widest">Notas</span>
+                </button>
+            </div>
+        </nav>
+
+        <!-- PT EDITOR MODAL -->
+        <div id="editor-modal" class="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 hidden flex flex-col items-center justify-center p-4 fade-in">
+            <div class="bg-brand-card border border-brand-cardBorder w-full max-w-lg rounded-2xl p-6 shadow-2xl flex flex-col h-[80vh]">
+                <h2 id="modal-title" class="text-xl font-bold text-white mb-2">Editar</h2>
+                <p id="modal-help" class="text-xs text-gray-400 mb-4 bg-gray-900 p-3 rounded-lg border border-gray-800 font-mono"></p>
+                
+                <textarea id="edit-area" class="flex-1 w-full bg-[#09090b] border border-gray-800 rounded-xl p-4 text-gray-200 placeholder:text-gray-600 focus:outline-none focus:border-brand-yellow transition-all resize-none font-mono text-sm mb-4"></textarea>
+                
+                <div class="flex gap-3 justify-end shrink-0">
+                    <button onclick="closeEditor()" class="px-5 py-2.5 bg-gray-800 text-gray-300 font-bold rounded-xl hover:bg-gray-700 transition-colors">Cancelar</button>
+                    <button onclick="saveEditor()" class="px-5 py-2.5 bg-brand-yellow text-black font-bold rounded-xl hover:bg-brand-yellowDark transition-colors shadow-lg shadow-brand-yellow/20">Salvar Planejamento</button>
+                </div>
+            </div>
+        </div>
+
+    </div>
+
+</body>
+</html>
