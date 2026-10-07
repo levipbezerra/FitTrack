@@ -65,7 +65,7 @@
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
         import { getAuth, createUserWithEmailAndPassword, signInWithEmailAndPassword, signOut, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, doc, setDoc, onSnapshot, collection } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { getFirestore, doc, setDoc, getDoc, deleteDoc, onSnapshot, collection } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
         // APAGUE AS CONFIGURAÇÕES ANTIGAS E COLE A SUA AQUI:
         const appId = 'fittrack-pro-app'; 
@@ -120,27 +120,16 @@
         // O UID fornecido pelo Firebase é estável e único por conta.
         let authReady = false;
         onAuthStateChanged(auth, (user) => {
-            if (user) {
-                currentUser = user;
-                if (!authReady) {
-                    authReady = true;
-                    document.getElementById('screen-loading').classList.add('hidden');
-                    document.getElementById('screen-role').classList.remove('hidden');
-                }
-                userRole = 'client';
-                activeClientId = user.uid;
-                startApp();
-            } else {
-                currentUser = null;
-                authReady = true;
-                userRole = null;
-                activeClientId = null;
-                if (unsubPlan) { unsubPlan(); unsubPlan = null; }
-                if (unsubLog) { unsubLog(); unsubLog = null; }
-                document.getElementById('screen-loading').classList.add('hidden');
-                document.getElementById('screen-main').classList.add('hidden');
-                document.getElementById('screen-role').classList.remove('hidden');
-            }
+            if (unsubPlan) { unsubPlan(); unsubPlan = null; }
+            if (unsubLog) { unsubLog(); unsubLog = null; }
+            if (unsubGrants) { unsubGrants(); unsubGrants = null; }
+            currentUser = user;
+            userRole = null;
+            activeClientId = null;
+            document.getElementById('screen-loading').classList.add('hidden');
+            document.getElementById('screen-main').classList.add('hidden');
+            document.getElementById('screen-role').classList.toggle('hidden', !!user);
+            document.getElementById('screen-choose-role').classList.toggle('hidden', !user);
         });
 
         function authMessage(error) {
@@ -183,33 +172,105 @@
             await signOut(auth);
         };
 
-        // Acesso por código não é autorização: até haver convites verificados
-        // pelas regras do Firestore, o painel de terceiros permanece bloqueado.
-        window.selectRole = () => {
-            showToast('Acesso de personal exige autorização do aluno e ainda não está habilitado.', 'error');
+        let unsubGrants = null;
+        function grantRef(studentUid, personalUid) {
+            return doc(db, 'artifacts', appId, 'public', 'data', 'grants', studentUid, 'trainers', personalUid);
+        }
+        function grantsCollection(studentUid) {
+            return collection(db, 'artifacts', appId, 'public', 'data', 'grants', studentUid, 'trainers');
+        }
+        function refreshGrants() {
+            if (unsubGrants) unsubGrants();
+            unsubGrants = onSnapshot(grantsCollection(currentUser.uid), (snap) => {
+                const list = document.getElementById('authorized-personals');
+                list.replaceChildren();
+                if (snap.empty) { list.textContent = 'Nenhum personal autorizado.'; return; }
+                snap.forEach((item) => {
+                    const entry = document.createElement('div');
+                    entry.className = 'flex items-center justify-between gap-2 bg-gray-900 rounded-lg p-3';
+                    const label = document.createElement('span');
+                    label.className = 'text-xs break-all';
+                    label.textContent = item.id;
+                    const btn = document.createElement('button');
+                    btn.className = 'text-red-400 font-bold text-xs';
+                    btn.textContent = 'Revogar';
+                    btn.onclick = () => revokePersonal(item.id);
+                    entry.append(label, btn);
+                    list.append(entry);
+                });
+            }, (e) => { console.error('Grants:', e); showToast('Não foi possível carregar as autorizações.', 'error'); });
+        }
+        window.authorizePersonal = async () => {
+            const id = document.getElementById('personal-uid').value.trim();
+            if (id.length < 10 || id.includes('/')) return showToast('Informe o UID válido do personal.', 'error');
+            if (id === currentUser.uid) return showToast('Use um UID diferente do seu.', 'error');
+            try {
+                await setDoc(grantRef(currentUser.uid, id), { studentUid: currentUser.uid, trainerUid: id });
+                document.getElementById('personal-uid').value = '';
+                showToast('Personal autorizado.', 'success');
+            } catch(e) { console.error('Grant:',e); showToast('Não foi possível autorizar. Confira as regras.', 'error'); }
         };
-        window.loginAsPT = window.selectRole;
+        window.revokePersonal = async (id) => {
+            try { await deleteDoc(grantRef(currentUser.uid, id)); showToast('Acesso revogado.', 'success'); }
+            catch(e) { console.error(e); showToast('Falha ao revogar acesso.', 'error'); }
+        };
+        window.selectRole = (role) => {
+            if (!currentUser) return;
+            if (role === 'pt') {
+                document.getElementById('pt-entry').classList.remove('hidden');
+                document.getElementById('personal-code-label').textContent = currentUser.uid;
+                return;
+            }
+            userRole = 'client';
+            activeClientId = currentUser.uid;
+            startApp();
+        };
+        window.loginAsPT = async () => {
+            const studentUid = document.getElementById('pt-client-code').value.trim();
+            if (studentUid.length < 10 || studentUid.includes('/')) return showToast('Código de aluno inválido.', 'error');
+            try {
+                const grant = await getDoc(grantRef(studentUid, currentUser.uid));
+                if (!grant.exists()) return showToast('O aluno ainda não autorizou seu acesso.', 'error');
+                userRole = 'pt';
+                activeClientId = studentUid;
+                startApp();
+            } catch(e) { console.error(e); showToast('Não foi possível verificar a autorização.', 'error'); }
+        };
+        window.changeRole = () => {
+            if (unsubPlan) { unsubPlan(); unsubPlan = null; }
+            if (unsubLog) { unsubLog(); unsubLog = null; }
+            if (unsubGrants) { unsubGrants(); unsubGrants = null; }
+            document.getElementById('screen-main').classList.add('hidden');
+            document.getElementById('screen-choose-role').classList.remove('hidden');
+            document.getElementById('pt-entry').classList.add('hidden');
+        };
 
-                function startApp() {
-            document.getElementById('screen-role').classList.add('hidden');
+        function startApp() {
+            document.getElementById('screen-choose-role').classList.add('hidden');
             document.getElementById('screen-main').classList.remove('hidden');
             
             // Setup Calendar
             const dateInput = document.getElementById('calendar-input');
             dateInput.value = selectedDate;
-            dateInput.addEventListener('change', (e) => {
+            dateInput.onchange = (e) => {
                 selectedDate = e.target.value;
                 subscribeToLog(); // Resubscribe for new date
-            });
+            };
 
             // Role specific UI
             if (userRole === 'pt') {
                 document.getElementById('user-badge').innerHTML = '<i data-lucide="shield-check" class="w-4 h-4 text-brand-yellow"></i> Modo Personal';
                 document.getElementById('btn-edit-diet').classList.remove('hidden');
+                document.getElementById('student-sharing').classList.add('hidden');
                 document.getElementById('btn-edit-workout').classList.remove('hidden');
                 document.getElementById('notes-input').readOnly = true;
                 document.getElementById('notes-input').placeholder = "O aluno ainda não escreveu nada neste dia...";
             } else {
+                document.getElementById('student-sharing').classList.remove('hidden');
+                document.getElementById('btn-edit-diet').classList.add('hidden');
+                document.getElementById('btn-edit-workout').classList.add('hidden');
+                document.getElementById('notes-input').readOnly = false;
+                refreshGrants();
                 document.getElementById('user-badge').innerHTML = `
                     <button onclick="copyClientCode()" class="flex items-center gap-1 hover:text-white transition-colors bg-brand-yellow/10 px-2 py-1 rounded text-brand-yellow">
                         <i data-lucide="key" class="w-3 h-3"></i> Meu Código
@@ -217,20 +278,21 @@
                 `;
             }
 
+            document.getElementById("screen-loading").classList.add("hidden");
             lucide.createIcons();
             subscribeToPlan();
             subscribeToLog();
             switchTab('dashboard');
         }
 
-        window.copyClientCode = () => {
+        window.copyMyUid = window.copyClientCode = () => {
             const tempInput = document.createElement("input");
             tempInput.value = currentUser.uid;
             document.body.appendChild(tempInput);
             tempInput.select();
             document.execCommand("copy");
             document.body.removeChild(tempInput);
-            showToast("Código copiado! Envie ao Personal.", "success");
+            showToast("UID copiado.", "success");
         }
 
         function getPlanRef() {
@@ -238,6 +300,9 @@
         }
 
         function getLogRef() {
+            return doc(db, 'artifacts', appId, 'public', 'data', 'studentLogs', activeClientId, 'days', selectedDate);
+        }
+        function getLegacyLogRef() {
             return doc(db, 'artifacts', appId, 'public', 'data', 'logs', `${activeClientId}_${selectedDate}`);
         }
 
@@ -268,15 +333,25 @@
             logData = { water: 0, meals: {}, workouts: {}, notes: '' };
             renderUI();
 
-            unsubLog = onSnapshot(getLogRef(), (docSnap) => {
+            const observedStudent = activeClientId;
+            const observedDate = selectedDate;
+            unsubLog = onSnapshot(getLogRef(), async (docSnap) => {
                 if (docSnap.exists()) {
                     logData = docSnap.data();
                 } else {
                     logData = { water: 0, meals: {}, workouts: {}, notes: '' };
+                    // Migrate the viewed date from the original flat collection.
+                    if (userRole === 'client' && activeClientId === observedStudent && selectedDate === observedDate) {
+                        try {
+                            const old = await getDoc(getLegacyLogRef());
+                            if (old.exists()) await setDoc(getLogRef(), old.data());
+                        } catch(e) { console.warn('Legacy migration:', e); }
+                    }
                 }
                 renderUI();
             }, (error) => {
                 console.error("Log Error:", error);
+                showToast('Sem permissão para ler o diário. Verifique o vínculo.', 'error');
             });
         }
 
@@ -443,6 +518,7 @@
             const blocks = rawText.split('---').map(b => b.trim()).filter(b => b);
             
             try {
+                if (userRole !== 'pt') throw new Error('Apenas o personal pode editar planos.');
                 if (mode === 'diet') {
                     const newMeals = blocks.map((block, idx) => {
                         const lines = block.split('\n').map(l => l.trim()).filter(l => l);
@@ -527,6 +603,24 @@
         </div>
     </div>
 
+    <!-- ================= SELECT ROLE ================= -->
+    <div id="screen-choose-role" class="absolute inset-0 flex flex-col items-center justify-center bg-[#09090b] z-40 hidden px-6">
+      <h1 class="text-3xl font-extrabold text-brand-yellow mb-8">FitTrack PRO</h1>
+      <div class="max-w-sm w-full space-y-4">
+        <p class="text-gray-400 text-sm text-center">Escolha como deseja acessar</p>
+        <button onclick="selectRole('client')" class="w-full py-4 bg-brand-yellow text-black font-bold rounded-2xl">Sou aluno</button>
+        <button onclick="selectRole('pt')" class="w-full py-4 bg-gray-800 text-white font-bold rounded-2xl">Sou personal</button>
+        <div id="pt-entry" class="hidden space-y-3">
+          <p class="text-gray-400 text-sm">Cole o UID do aluno que autorizou sua conta.</p>
+          <input id="pt-client-code" class="w-full bg-gray-900 p-3 rounded-xl text-white" placeholder="UID do aluno">
+          <button onclick="loginAsPT()" class="w-full py-3 bg-brand-purple text-white font-bold rounded-xl">Abrir aluno autorizado</button>
+          <p class="text-gray-500 text-xs">Envie seu UID ao aluno para ele autorizar: <span id="personal-code-label"></span></p>
+          <button onclick="copyMyUid()" class="text-brand-yellow text-sm">Copiar meu UID</button>
+        </div>
+        <button onclick="logout()" class="text-gray-400 text-sm w-full py-2">Sair da conta</button>
+      </div>
+    </div>
+
     <!-- ================= SCREEN: MAIN APP ================= -->
     <div id="screen-main" class="w-full max-w-md md:max-w-xl flex flex-col h-full relative hidden pb-24 md:pb-8 pt-6 px-4 md:px-8">
         
@@ -551,8 +645,16 @@
                     <input type="date" id="calendar-input" class="bg-transparent text-sm font-bold text-white focus:outline-none w-[115px] pl-6 cursor-pointer">
                 </div>
             </div>
+            <button onclick="changeRole()" class="text-sm text-brand-yellow mt-3">Trocar aluno / perfil</button>
         </header>
 
+        <section id="student-sharing" class="hidden bg-brand-card rounded-xl p-4 mb-4 border border-gray-800 space-y-3">
+            <h2 class="text-sm text-white font-bold">Autorizar personal</h2>
+            <p class="text-xs text-gray-400">Peça ao personal seu UID. Ele só terá acesso depois da sua autorização.</p>
+            <input id="personal-uid" class="w-full bg-gray-900 p-3 rounded-xl text-white text-sm" placeholder="UID do personal">
+            <button onclick="authorizePersonal()" class="bg-brand-yellow text-black rounded-xl px-4 py-2 font-bold text-sm">Autorizar acesso</button>
+            <div id="authorized-personals" class="space-y-2 text-gray-400 text-xs">Carregando autorizações...</div>
+        </section>
         <main class="flex-1 w-full relative">
             
             <!-- VIEW: DASHBOARD -->
