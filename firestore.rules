@@ -1,0 +1,12 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /artifacts/fittrack-pro-app/public/data/plans/{studentId} {
+      allow read, write: if request.auth != null && request.auth.uid == studentId;
+    }
+    match /artifacts/fittrack-pro-app/public/data/logs/{logId} {
+      allow read, write: if request.auth != null &&
+        logId.matches('^' + request.auth.uid + '_[0-9]{4}-[0-9]{2}-[0-9]{2}$');
+    }
+  }
+}
