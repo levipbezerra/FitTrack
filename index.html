@@ -64,8 +64,8 @@
 
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-        import { getAuth, createUserWithEmailAndPassword, signInWithEmailAndPassword, signOut, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, doc, setDoc, getDoc, deleteDoc, onSnapshot, collection } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { getAuth, signInWithEmailAndPassword, signOut, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, setDoc, getDoc, deleteDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
         // APAGUE AS CONFIGURAÇÕES ANTIGAS E COLE A SUA AQUI:
         const appId = 'fittrack-pro-app'; 
@@ -145,7 +145,7 @@
             return 'Falha na autenticação. Confira a configuração do Firebase e tente novamente.';
         }
 
-        async function authenticate(register = false) {
+        async function authenticate() {
             const email = document.getElementById('login-email').value.trim();
             const password = document.getElementById('login-password').value;
             const status = document.getElementById('login-status');
@@ -157,8 +157,7 @@
             }
             button.disabled = true;
             try {
-                if (register) await createUserWithEmailAndPassword(auth, email, password);
-                else await signInWithEmailAndPassword(auth, email, password);
+                await signInWithEmailAndPassword(auth, email, password);
             } catch (error) {
                 console.error('Firebase Authentication:', error.code, error.message);
                 status.textContent = authMessage(error);
@@ -166,80 +165,110 @@
                 button.disabled = false;
             }
         }
-        window.login = () => authenticate(false);
-        window.register = () => authenticate(true);
+        window.login = () => authenticate();
         window.logout = async () => {
             await signOut(auth);
         };
 
+        // Fase de testes: um aluno com um único personal vinculado.
+        // A permissão é validada no Firestore, não no armazenamento do navegador.
         let unsubGrants = null;
-        function grantRef(studentUid, personalUid) {
-            return doc(db, 'artifacts', appId, 'public', 'data', 'grants', studentUid, 'trainers', personalUid);
-        }
-        function grantsCollection(studentUid) {
-            return collection(db, 'artifacts', appId, 'public', 'data', 'grants', studentUid, 'trainers');
+        const recentStudentKey = uid => 'fittrack_student_' + uid;
+        function grantRef(studentUid) {
+            return doc(db, 'artifacts', appId, 'public', 'data', 'grants', studentUid, 'trainers', 'primary');
         }
         function refreshGrants() {
-            if (unsubGrants) unsubGrants();
-            unsubGrants = onSnapshot(grantsCollection(currentUser.uid), (snap) => {
+            if (unsubGrants) { unsubGrants(); unsubGrants = null; }
+            const uid = currentUser.uid;
+            unsubGrants = onSnapshot(grantRef(uid), (snap) => {
+                if (!currentUser || uid !== currentUser.uid) return;
                 const list = document.getElementById('authorized-personals');
                 list.replaceChildren();
-                if (snap.empty) { list.textContent = 'Nenhum personal autorizado.'; return; }
-                snap.forEach((item) => {
-                    const entry = document.createElement('div');
-                    entry.className = 'flex items-center justify-between gap-2 bg-gray-900 rounded-lg p-3';
-                    const label = document.createElement('span');
-                    label.className = 'text-xs break-all';
-                    label.textContent = item.id;
-                    const btn = document.createElement('button');
-                    btn.className = 'text-red-400 font-bold text-xs';
-                    btn.textContent = 'Revogar';
-                    btn.onclick = () => revokePersonal(item.id);
-                    entry.append(label, btn);
-                    list.append(entry);
-                });
-            }, (e) => { console.error('Grants:', e); showToast('Não foi possível carregar as autorizações.', 'error'); });
+                if (!snap.exists()) {
+                    list.textContent = 'Nenhum personal vinculado. Informe o UID da conta existente.';
+                    return;
+                }
+                const label = document.createElement('div');
+                label.className = 'text-xs break-all';
+                label.textContent = 'Personal autorizado: ' + snap.data().trainerUid;
+                const button = document.createElement('button');
+                button.className = 'text-red-400 font-bold text-xs mt-2';
+                button.textContent = 'Revogar acesso';
+                button.onclick = () => window.revokePersonal();
+                list.append(label, button);
+            }, (e) => {
+                console.error('Autorização personal:', e.code, e.message);
+                document.getElementById('authorized-personals').textContent =
+                    'Falha ao consultar a autorização. Verifique as regras publicadas no Firestore.';
+            });
         }
         window.authorizePersonal = async () => {
-            const id = document.getElementById('personal-uid').value.trim();
-            if (id.length < 10 || id.includes('/')) return showToast('Informe o UID válido do personal.', 'error');
-            if (id === currentUser.uid) return showToast('Use um UID diferente do seu.', 'error');
+            if (!currentUser || userRole !== 'client') return;
+            const trainerUid = document.getElementById('personal-uid').value.trim();
+            if (!/^[A-Za-z0-9_-]{10,128}$/.test(trainerUid))
+                return showToast('Informe o UID válido do personal.', 'error');
+            if (trainerUid === currentUser.uid)
+                return showToast('O personal deve usar outra conta.', 'error');
             try {
-                await setDoc(grantRef(currentUser.uid, id), { studentUid: currentUser.uid, trainerUid: id });
+                await setDoc(grantRef(currentUser.uid), {
+                    studentUid: currentUser.uid, trainerUid
+                });
                 document.getElementById('personal-uid').value = '';
-                showToast('Personal autorizado.', 'success');
-            } catch(e) { console.error('Grant:',e); showToast('Não foi possível autorizar. Confira as regras.', 'error'); }
+                showToast('Personal vinculado com sucesso!', 'success');
+            } catch (e) {
+                console.error('Autorizar:', e.code, e.message);
+                showToast('Não foi possível autorizar. Confira as regras do Firestore.', 'error');
+            }
         };
-        window.revokePersonal = async (id) => {
-            try { await deleteDoc(grantRef(currentUser.uid, id)); showToast('Acesso revogado.', 'success'); }
-            catch(e) { console.error(e); showToast('Falha ao revogar acesso.', 'error'); }
+        window.revokePersonal = async () => {
+            if (!currentUser || userRole !== 'client') return;
+            try {
+                await deleteDoc(grantRef(currentUser.uid));
+                showToast('Acesso do personal revogado.', 'success');
+            } catch (e) {
+                console.error('Revogar:', e.code, e.message);
+                showToast('Não foi possível revogar o acesso.', 'error');
+            }
         };
-        window.selectRole = (role) => {
+        window.selectRole = role => {
             if (!currentUser) return;
             if (role === 'pt') {
                 document.getElementById('pt-entry').classList.remove('hidden');
                 document.getElementById('personal-code-label').textContent = currentUser.uid;
+                document.getElementById('pt-client-code').value =
+                    localStorage.getItem(recentStudentKey(currentUser.uid)) || '';
                 return;
             }
+            if (unsubGrants) { unsubGrants(); unsubGrants = null; }
             userRole = 'client';
             activeClientId = currentUser.uid;
             startApp();
         };
         window.loginAsPT = async () => {
+            if (!currentUser) return;
             const studentUid = document.getElementById('pt-client-code').value.trim();
-            if (studentUid.length < 10 || studentUid.includes('/')) return showToast('Código de aluno inválido.', 'error');
+            if (!/^[A-Za-z0-9_-]{10,128}$/.test(studentUid))
+                return showToast('Informe o UID do aluno.', 'error');
             try {
-                const grant = await getDoc(grantRef(studentUid, currentUser.uid));
-                if (!grant.exists()) return showToast('O aluno ainda não autorizou seu acesso.', 'error');
+                const grant = await getDoc(grantRef(studentUid));
+                if (!grant.exists() || grant.data().trainerUid !== currentUser.uid)
+                    return showToast('Esta conta ainda não foi autorizada pelo aluno.', 'error');
+                if (unsubGrants) { unsubGrants(); unsubGrants = null; }
                 userRole = 'pt';
                 activeClientId = studentUid;
+                localStorage.setItem(recentStudentKey(currentUser.uid), studentUid);
                 startApp();
-            } catch(e) { console.error(e); showToast('Não foi possível verificar a autorização.', 'error'); }
+            } catch (e) {
+                console.error('Personal:', e.code, e.message);
+                showToast('Falha na verificação. Verifique o vínculo e as regras do Firestore.', 'error');
+            }
         };
         window.changeRole = () => {
             if (unsubPlan) { unsubPlan(); unsubPlan = null; }
             if (unsubLog) { unsubLog(); unsubLog = null; }
             if (unsubGrants) { unsubGrants(); unsubGrants = null; }
+            userRole = null;
+            activeClientId = null;
             document.getElementById('screen-main').classList.add('hidden');
             document.getElementById('screen-choose-role').classList.remove('hidden');
             document.getElementById('pt-entry').classList.add('hidden');
@@ -314,16 +343,14 @@
                 } else {
                     // Seed initial data if client
                     planData = { meals: defaultMeals, workouts: defaultWorkouts };
-                    if (userRole === 'client') {
-                        setDoc(getPlanRef(), planData);
-                    }
+                    // Sem gravação automática: aguardar planejamento do personal.
                 }
                 renderUI();
             }, (error) => {
-                console.error("Plan Error:", error);
-                planData = { meals: defaultMeals, workouts: defaultWorkouts };
+                console.error("Plan Error:", error.code, error.message);
+                planData = { meals: [], workouts: [] };
                 renderUI();
-                showToast("Nuvem indisponível. Planejamento padrão carregado.", "error");
+                showToast("Não foi possível ler o plano. Confira as regras do Firestore.", "error");
             });
         }
 
@@ -593,13 +620,12 @@
     <div id="screen-role" class="absolute inset-0 flex flex-col items-center justify-center bg-[#09090b] z-40 hidden px-6">
         <h1 class="text-3xl font-extrabold text-transparent bg-clip-text bg-gradient-to-r from-brand-yellow to-brand-purple tracking-tight mb-8 text-center">FitTrack PRO</h1>
         <div class="w-full max-w-sm space-y-4">
-            <p class="text-gray-400 text-sm text-center">Entre na sua conta individual. Cada aluno possui um código exclusivo.</p>
+            <p class="text-gray-400 text-sm text-center">Área exclusiva do aluno e do personal já cadastrados.</p>
             <input id="login-email" type="email" autocomplete="email" placeholder="Seu e-mail" class="w-full bg-[#18181b] border border-gray-700 rounded-xl p-4 text-white focus:outline-none focus:border-brand-yellow">
             <input id="login-password" type="password" autocomplete="current-password" placeholder="Sua senha (mínimo 6 caracteres)" class="w-full bg-[#18181b] border border-gray-700 rounded-xl p-4 text-white focus:outline-none focus:border-brand-yellow" onkeydown="if(event.key==='Enter')login()">
             <p id="login-status" role="alert" class="text-red-400 text-sm"></p>
             <button id="login-submit" onclick="login()" class="w-full py-4 bg-brand-yellow text-black font-extrabold rounded-2xl">Entrar</button>
-            <button onclick="register()" class="w-full py-4 bg-gray-800 text-white font-bold rounded-2xl border border-gray-700">Criar conta de aluno</button>
-            <p class="text-xs text-gray-500 text-center">Acesso para personal: em preparação. O código do aluno não concede acesso automaticamente.</p>
+            <p class="text-xs text-gray-500 text-center">Acesso temporariamente limitado às contas existentes. Use o e-mail e a senha já cadastrados.</p>
         </div>
     </div>
 
@@ -607,11 +633,11 @@
     <div id="screen-choose-role" class="absolute inset-0 flex flex-col items-center justify-center bg-[#09090b] z-40 hidden px-6">
       <h1 class="text-3xl font-extrabold text-brand-yellow mb-8">FitTrack PRO</h1>
       <div class="max-w-sm w-full space-y-4">
-        <p class="text-gray-400 text-sm text-center">Escolha como deseja acessar</p>
+        <p class="text-gray-400 text-sm text-center">Acesso para a dupla de testes</p>
         <button onclick="selectRole('client')" class="w-full py-4 bg-brand-yellow text-black font-bold rounded-2xl">Sou aluno</button>
         <button onclick="selectRole('pt')" class="w-full py-4 bg-gray-800 text-white font-bold rounded-2xl">Sou personal</button>
         <div id="pt-entry" class="hidden space-y-3">
-          <p class="text-gray-400 text-sm">Cole o UID do aluno que autorizou sua conta.</p>
+          <p class="text-gray-400 text-sm">Informe uma vez o UID do aluno. Nas próximas visitas ficará preenchido automaticamente.</p>
           <input id="pt-client-code" class="w-full bg-gray-900 p-3 rounded-xl text-white" placeholder="UID do aluno">
           <button onclick="loginAsPT()" class="w-full py-3 bg-brand-purple text-white font-bold rounded-xl">Abrir aluno autorizado</button>
           <p class="text-gray-500 text-xs">Envie seu UID ao aluno para ele autorizar: <span id="personal-code-label"></span></p>
@@ -649,8 +675,8 @@
         </header>
 
         <section id="student-sharing" class="hidden bg-brand-card rounded-xl p-4 mb-4 border border-gray-800 space-y-3">
-            <h2 class="text-sm text-white font-bold">Autorizar personal</h2>
-            <p class="text-xs text-gray-400">Peça ao personal seu UID. Ele só terá acesso depois da sua autorização.</p>
+            <h2 class="text-sm text-white font-bold">Meu personal</h2>
+            <p class="text-xs text-gray-400">Vincule somente a conta do personal que já acessou. Autorizar outro UID substituirá o anterior.</p>
             <input id="personal-uid" class="w-full bg-gray-900 p-3 rounded-xl text-white text-sm" placeholder="UID do personal">
             <button onclick="authorizePersonal()" class="bg-brand-yellow text-black rounded-xl px-4 py-2 font-bold text-sm">Autorizar acesso</button>
             <div id="authorized-personals" class="space-y-2 text-gray-400 text-xs">Carregando autorizações...</div>
