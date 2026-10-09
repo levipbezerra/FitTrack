@@ -4,29 +4,53 @@ service cloud.firestore {
     function signedIn() {
       return request.auth != null;
     }
-    function studentOrTrainer(studentUid) {
-      return signedIn() && (request.auth.uid == studentUid ||
-        exists(/databases/$(database)/documents/artifacts/fittrack-pro-app/public/data/grants/$(studentUid)/trainers/$(request.auth.uid)));
+
+    // Apenas UM personal por aluno, vinculado no documento fixo "primary".
+    function primaryGrantPath(studentUid) {
+      return /databases/$(database)/documents/artifacts/fittrack-pro-app/public/data/grants/$(studentUid)/trainers/primary;
     }
-    match /artifacts/fittrack-pro-app/public/data/grants/{studentUid}/trainers/{trainerUid} {
-      allow get: if signedIn() && (request.auth.uid == studentUid || request.auth.uid == trainerUid);
-      allow list: if signedIn() && request.auth.uid == studentUid;
+
+    function assignedTrainer(studentUid) {
+      return signedIn() &&
+        exists(primaryGrantPath(studentUid)) &&
+        get(primaryGrantPath(studentUid)).data.trainerUid == request.auth.uid;
+    }
+
+    function ownerOrTrainer(studentUid) {
+      return signedIn() &&
+        (request.auth.uid == studentUid || assignedTrainer(studentUid));
+    }
+
+    match /artifacts/fittrack-pro-app/public/data/grants/{studentUid}/trainers/{trainerDocId} {
+      // Documentos antigos, fora de "primary", deixam de conceder acesso.
+      allow get: if signedIn() && trainerDocId == 'primary' &&
+        (request.auth.uid == studentUid ||
+         (resource != null && resource.data.trainerUid == request.auth.uid));
+      allow list: if false;
       allow create, update: if signedIn() && request.auth.uid == studentUid &&
+        trainerDocId == 'primary' &&
         request.resource.data.keys().hasOnly(['studentUid', 'trainerUid']) &&
+        request.resource.data.keys().hasAll(['studentUid', 'trainerUid']) &&
         request.resource.data.studentUid == studentUid &&
-        request.resource.data.trainerUid == trainerUid;
-      allow delete: if signedIn() && request.auth.uid == studentUid;
+        request.resource.data.trainerUid is string &&
+        request.resource.data.trainerUid.size() >= 10 &&
+        request.resource.data.trainerUid != studentUid;
+      allow delete: if signedIn() && request.auth.uid == studentUid &&
+        trainerDocId == 'primary';
     }
+
     match /artifacts/fittrack-pro-app/public/data/plans/{studentUid} {
-      allow read: if studentOrTrainer(studentUid);
-      allow create, update: if studentOrTrainer(studentUid);
+      allow read: if ownerOrTrainer(studentUid);
+      allow create, update: if ownerOrTrainer(studentUid);
       allow delete: if signedIn() && request.auth.uid == studentUid;
     }
+
     match /artifacts/fittrack-pro-app/public/data/studentLogs/{studentUid}/days/{day} {
-      allow read: if studentOrTrainer(studentUid);
+      allow read: if ownerOrTrainer(studentUid);
       allow create, update, delete: if signedIn() && request.auth.uid == studentUid;
     }
-    // Read-only legacy daily logs to support migration for the owning student.
+
+    // Histórico antigo: disponível somente para o próprio aluno copiar.
     match /artifacts/fittrack-pro-app/public/data/logs/{logId} {
       allow get: if signedIn() &&
         logId.matches('^' + request.auth.uid + '_[0-9]{4}-[0-9]{2}-[0-9]{2}$');
