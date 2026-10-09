@@ -65,7 +65,7 @@
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
         import { getAuth, signInWithEmailAndPassword, signOut, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, doc, setDoc, getDoc, deleteDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { getFirestore, doc, setDoc, getDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
         // APAGUE AS CONFIGURAÇÕES ANTIGAS E COLE A SUA AQUI:
         const appId = 'fittrack-pro-app'; 
@@ -103,28 +103,10 @@
         let unsubPlan = null;
         let unsubLog = null;
 
-        // Default Data Fallback (Se novo usuário)
-        const defaultMeals = [
-            { id: 'cafe', time: 'Manhã', title: 'Café da Manhã', items: 'Crepioca com frango\n1 Fruta (Melão ou Laranja)' },
-            { id: 'almoco', time: 'Meio-dia', title: 'Almoço', items: 'Arroz e Feijão\nFilé de Peito\nSalada à vontade' },
-            { id: 'lanche', time: 'Tarde', title: 'Lanche', items: 'Misto Quente (Pão, queijo, presunto, requeijão)\n1 Banana' },
-            { id: 'jantar', time: 'Noite', title: 'Jantar', items: 'Panqueca de carne\nSalada verde' }
-        ];
-        const defaultWorkouts = [
-            { id: 'upper', day: 'Treino 1', name: 'UPPER', desc: 'Supino reto, Pulley frente, Elevação lateral, Tríceps polia, Rosca direta.' },
-            { id: 'cardio1', day: 'Treino 2', name: 'CARDIO', desc: 'Esteira 1h.' },
-            { id: 'lower', day: 'Treino 3', name: 'LOWER', desc: 'Agachamento Smith, Cadeira Extensora, Flexora, Stiff, Panturrilha.' },
-            { id: 'cardio2', day: 'Treino 4', name: 'CARDIO', desc: 'Bike 45 min.' },
-            { id: 'fullbody', day: 'Treino 5', name: 'FULL BODY', desc: 'Dumbbell inclinado, Remada baixa, Crucifixo inverso, Tríceps Francês, Rosca Scott.' }
-        ];
-
-        // Autenticação real: nenhuma identidade falsa no navegador.
-        // O UID fornecido pelo Firebase é estável e único por conta.
         let authReady = false;
         onAuthStateChanged(auth, (user) => {
             if (unsubPlan) { unsubPlan(); unsubPlan = null; }
             if (unsubLog) { unsubLog(); unsubLog = null; }
-            if (unsubGrants) { unsubGrants(); unsubGrants = null; }
             currentUser = user;
             userRole = null;
             activeClientId = null;
@@ -182,112 +164,8 @@
             await signOut(auth);
         };
 
-        // Fase de testes: um aluno com um único personal vinculado.
-        // A permissão é validada no Firestore, não no armazenamento do navegador.
-        let unsubGrants = null;
-        const recentStudentKey = uid => 'fittrack_student_' + uid;
-        function grantRef(studentUid) {
-            return doc(db, 'artifacts', appId, 'public', 'data', 'grants', studentUid, 'trainers', 'primary');
-        }
-        function refreshGrants() {
-            if (unsubGrants) { unsubGrants(); unsubGrants = null; }
-            const uid = currentUser.uid;
-            unsubGrants = onSnapshot(grantRef(uid), (snap) => {
-                if (!currentUser || uid !== currentUser.uid) return;
-                const list = document.getElementById('authorized-personals');
-                list.replaceChildren();
-                if (!snap.exists()) {
-                    list.textContent = 'Nenhum personal vinculado. Informe o UID da conta existente.';
-                    return;
-                }
-                const label = document.createElement('div');
-                label.className = 'text-xs break-all';
-                label.textContent = 'Personal autorizado: ' + snap.data().trainerUid;
-                const button = document.createElement('button');
-                button.className = 'text-red-400 font-bold text-xs mt-2';
-                button.textContent = 'Revogar acesso';
-                button.onclick = () => window.revokePersonal();
-                list.append(label, button);
-            }, (e) => {
-                console.error('Autorização personal:', e.code, e.message);
-                document.getElementById('authorized-personals').textContent =
-                    'Falha ao consultar a autorização. Verifique as regras publicadas no Firestore.';
-            });
-        }
-        window.authorizePersonal = async () => {
-            if (!currentUser || userRole !== 'client') return;
-            const trainerUid = document.getElementById('personal-uid').value.trim();
-            if (!/^[A-Za-z0-9_-]{10,128}$/.test(trainerUid))
-                return showToast('Informe o UID válido do personal.', 'error');
-            if (trainerUid === currentUser.uid)
-                return showToast('O personal deve usar outra conta.', 'error');
-            try {
-                await setDoc(grantRef(currentUser.uid), {
-                    studentUid: currentUser.uid, trainerUid
-                });
-                document.getElementById('personal-uid').value = '';
-                showToast('Personal vinculado com sucesso!', 'success');
-            } catch (e) {
-                console.error('Autorizar:', e.code, e.message);
-                showToast('Não foi possível autorizar. Confira as regras do Firestore.', 'error');
-            }
-        };
-        window.revokePersonal = async () => {
-            if (!currentUser || userRole !== 'client') return;
-            try {
-                await deleteDoc(grantRef(currentUser.uid));
-                showToast('Acesso do personal revogado.', 'success');
-            } catch (e) {
-                console.error('Revogar:', e.code, e.message);
-                showToast('Não foi possível revogar o acesso.', 'error');
-            }
-        };
-        window.selectRole = role => {
-            if (!currentUser) return;
-            if (role === 'pt') {
-                document.getElementById('pt-entry').classList.remove('hidden');
-                document.getElementById('personal-code-label').textContent = currentUser.uid;
-                document.getElementById('pt-client-code').value =
-                    localStorage.getItem(recentStudentKey(currentUser.uid)) || '';
-                return;
-            }
-            if (unsubGrants) { unsubGrants(); unsubGrants = null; }
-            userRole = 'client';
-            activeClientId = currentUser.uid;
-            startApp();
-        };
-        window.loginAsPT = async () => {
-            if (!currentUser) return;
-            const studentUid = document.getElementById('pt-client-code').value.trim();
-            if (!/^[A-Za-z0-9_-]{10,128}$/.test(studentUid))
-                return showToast('Informe o UID do aluno.', 'error');
-            try {
-                const grant = await getDoc(grantRef(studentUid));
-                if (!grant.exists() || grant.data().trainerUid !== currentUser.uid)
-                    return showToast('Esta conta ainda não foi autorizada pelo aluno.', 'error');
-                if (unsubGrants) { unsubGrants(); unsubGrants = null; }
-                userRole = 'pt';
-                activeClientId = studentUid;
-                localStorage.setItem(recentStudentKey(currentUser.uid), studentUid);
-                startApp();
-            } catch (e) {
-                console.error('Personal:', e.code, e.message);
-                showToast('Falha na verificação. Verifique o vínculo e as regras do Firestore.', 'error');
-            }
-        };
-        window.changeRole = () => {
-            if (unsubPlan) { unsubPlan(); unsubPlan = null; }
-            if (unsubLog) { unsubLog(); unsubLog = null; }
-            if (unsubGrants) { unsubGrants(); unsubGrants = null; }
-            userRole = null;
-            activeClientId = null;
-            document.getElementById('screen-main').classList.add('hidden');
-            document.getElementById('screen-choose-role').classList.remove('hidden');
-            document.getElementById('pt-entry').classList.add('hidden');
-        };
-
         function startApp() {
-            document.getElementById('screen-choose-role').classList.add('hidden');
+            document.getElementById('screen-role').classList.add('hidden');
             document.getElementById('screen-main').classList.remove('hidden');
             
             // Setup Calendar
@@ -300,23 +178,16 @@
 
             // Role specific UI
             if (userRole === 'pt') {
-                document.getElementById('user-badge').innerHTML = '<i data-lucide="shield-check" class="w-4 h-4 text-brand-yellow"></i> Modo Personal';
+                document.getElementById('user-badge').textContent = 'Personal autorizado';
                 document.getElementById('btn-edit-diet').classList.remove('hidden');
-                document.getElementById('student-sharing').classList.add('hidden');
                 document.getElementById('btn-edit-workout').classList.remove('hidden');
                 document.getElementById('notes-input').readOnly = true;
                 document.getElementById('notes-input').placeholder = "O aluno ainda não escreveu nada neste dia...";
             } else {
-                document.getElementById('student-sharing').classList.remove('hidden');
                 document.getElementById('btn-edit-diet').classList.add('hidden');
                 document.getElementById('btn-edit-workout').classList.add('hidden');
                 document.getElementById('notes-input').readOnly = false;
-                document.getElementById('student-sharing').classList.add('hidden');
-                document.getElementById('user-badge').innerHTML = `
-                    <button onclick="copyClientCode()" class="flex items-center gap-1 hover:text-white transition-colors bg-brand-yellow/10 px-2 py-1 rounded text-brand-yellow">
-                        <i data-lucide="key" class="w-3 h-3"></i> Meu Código
-                    </button>
-                `;
+                document.getElementById('user-badge').textContent = 'Aluno';
             }
 
             document.getElementById("screen-loading").classList.add("hidden");
@@ -324,16 +195,6 @@
             subscribeToPlan();
             subscribeToLog();
             switchTab('dashboard');
-        }
-
-        window.copyMyUid = window.copyClientCode = () => {
-            const tempInput = document.createElement("input");
-            tempInput.value = currentUser.uid;
-            document.body.appendChild(tempInput);
-            tempInput.select();
-            document.execCommand("copy");
-            document.body.removeChild(tempInput);
-            showToast("UID copiado.", "success");
         }
 
         function getPlanRef() {
@@ -353,9 +214,8 @@
                 if (docSnap.exists()) {
                     planData = docSnap.data();
                 } else {
-                    // Seed initial data if client
-                    planData = { meals: defaultMeals, workouts: defaultWorkouts };
-                    // Sem gravação automática: aguardar planejamento do personal.
+                    // Nenhum plano fictício para um aluno sem planejamento publicado.
+                    planData = { meals: [], workouts: [] };
                 }
                 renderUI();
             }, (error) => {
@@ -587,7 +447,7 @@
                 closeEditor();
             } catch (e) {
                 console.error(e);
-                showToast("Erro ao processar formatação.", "error");
+                showToast("Falha ao salvar o planejamento. Confira as regras do Firestore.", "error");
             }
         };
 
@@ -641,24 +501,6 @@
         </div>
     </div>
 
-    <!-- ================= SELECT ROLE ================= -->
-    <div id="screen-choose-role" class="absolute inset-0 flex flex-col items-center justify-center bg-[#09090b] z-40 hidden px-6">
-      <h1 class="text-3xl font-extrabold text-brand-yellow mb-8">FitTrack PRO</h1>
-      <div class="max-w-sm w-full space-y-4">
-        <p class="text-gray-400 text-sm text-center">Acesso para a dupla de testes</p>
-        <button onclick="selectRole('client')" class="w-full py-4 bg-brand-yellow text-black font-bold rounded-2xl">Sou aluno</button>
-        <button onclick="selectRole('pt')" class="w-full py-4 bg-gray-800 text-white font-bold rounded-2xl">Sou personal</button>
-        <div id="pt-entry" class="hidden space-y-3">
-          <p class="text-gray-400 text-sm">Informe uma vez o UID do aluno. Nas próximas visitas ficará preenchido automaticamente.</p>
-          <input id="pt-client-code" class="w-full bg-gray-900 p-3 rounded-xl text-white" placeholder="UID do aluno">
-          <button onclick="loginAsPT()" class="w-full py-3 bg-brand-purple text-white font-bold rounded-xl">Abrir aluno autorizado</button>
-          <p class="text-gray-500 text-xs">Envie seu UID ao aluno para ele autorizar: <span id="personal-code-label"></span></p>
-          <button onclick="copyMyUid()" class="text-brand-yellow text-sm">Copiar meu UID</button>
-        </div>
-        <button onclick="logout()" class="text-gray-400 text-sm w-full py-2">Sair da conta</button>
-      </div>
-    </div>
-
     <!-- ================= SCREEN: MAIN APP ================= -->
     <div id="screen-main" class="w-full max-w-md md:max-w-xl flex flex-col h-full relative hidden pb-24 md:pb-8 pt-6 px-4 md:px-8">
         
@@ -683,16 +525,8 @@
                     <input type="date" id="calendar-input" class="bg-transparent text-sm font-bold text-white focus:outline-none w-[115px] pl-6 cursor-pointer">
                 </div>
             </div>
-            <button onclick="changeRole()" class="text-sm text-brand-yellow mt-3">Trocar aluno / perfil</button>
         </header>
 
-        <section id="student-sharing" class="hidden bg-brand-card rounded-xl p-4 mb-4 border border-gray-800 space-y-3">
-            <h2 class="text-sm text-white font-bold">Meu personal</h2>
-            <p class="text-xs text-gray-400">Vincule somente a conta do personal que já acessou. Autorizar outro UID substituirá o anterior.</p>
-            <input id="personal-uid" class="w-full bg-gray-900 p-3 rounded-xl text-white text-sm" placeholder="UID do personal">
-            <button onclick="authorizePersonal()" class="bg-brand-yellow text-black rounded-xl px-4 py-2 font-bold text-sm">Autorizar acesso</button>
-            <div id="authorized-personals" class="space-y-2 text-gray-400 text-xs">Carregando autorizações...</div>
-        </section>
         <main class="flex-1 w-full relative">
             
             <!-- VIEW: DASHBOARD -->
